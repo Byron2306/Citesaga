@@ -3,8 +3,12 @@ name: Build and Deploy to GitHub Pages
 on:
   push:
     branches:
-      - master
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -22,27 +26,16 @@ jobs:
           python-version: '3.11'
 
       - name: Install Pygbag
-        run: pip install pygbag
+        run: python -m pip install pygbag==0.9.3
 
       - name: Build WebAssembly Version
         run: python -m pygbag --build .
 
-      - name: Upload archive to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: game-assets-latest
-          name: Game Assets (auto-updated)
-          files: build/web/*.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Patch index.html and remove large files
+      - name: Prepare Pages files
         run: |
-          ARCHIVE=$(ls build/web/*.tar.gz | xargs basename)
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/game-assets-latest/${ARCHIVE}"
-          sed -i "s|${ARCHIVE}|${RELEASE_URL}|g" build/web/index.html
           sed -i 's/background-color:powderblue;/background-color:black;/g' build/web/index.html
-          rm -f build/web/*.tar.gz build/web/*.apk
+          rm -f build/web/*.apk
+          touch build/web/.nojekyll
 
       - name: Deploy static files to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
