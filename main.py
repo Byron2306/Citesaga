@@ -62,6 +62,16 @@ COMPLETE_REFERENCE = 'complete_reference'
 CITATION_TOKENS_COLUMN_WIDTH = 350
 CITATION_CARDS_COLUMN_WIDTH = 350
 
+
+class SilentSound:
+    """No-op fallback when a browser refuses to open its audio device."""
+
+    def play(self, *args, **kwargs):
+        return None
+
+    def stop(self):
+        return None
+
 class Player:
     def __init__(self, name, image_path):
         self.name = name
@@ -143,7 +153,16 @@ class EnvironmentCard:
 
 class Game:
     def __init__(self):
-        pygame.init()
+        # Opening the web audio device before a trusted click causes browsers
+        # to repeatedly suspend it. Defer mixer startup on Emscripten while
+        # still initializing the visual subsystems immediately.
+        if sys.platform == "emscripten":
+            pygame.display.init()
+            pygame.font.init()
+        else:
+            pygame.init()
+
+        self.audio_ready = False
 
         global WINDOW_WIDTH, WINDOW_HEIGHT
         if sys.platform == "emscripten":
@@ -246,10 +265,9 @@ class Game:
         self.popup_fade_duration = 1000
         self.choice = False
         self.win = False
-        self.flip_sound = self.load_sound('flip.ogg')
-        self.move_sound = self.load_sound('move.ogg')
-        self.magic_sound = self.load_sound('magic.ogg')
-        self.load_music('Neon_Realms.ogg')
+        self.flip_sound = SilentSound()
+        self.move_sound = SilentSound()
+        self.magic_sound = SilentSound()
         self.current_player = 0
         self.flip_alpha = 0
         self.flip_duration = 1000
@@ -260,8 +278,7 @@ class Game:
         self.citation_card_y_offsets = [40, 120, 205]
         self.show_turn_image = True
         self.turn_image_display_start = 0
-        pygame.mixer.set_num_channels(20)
-        self.hover_sound_channel = pygame.mixer.Channel(10)
+        self.hover_sound_channel = SilentSound()
         self.current_hovered_card = None
         self.execute_card_effect_done = False
         self.conclusion_phase_start_time = None
@@ -279,6 +296,9 @@ class Game:
         }
         self.seal_rect = pygame.Rect((base_x, base_y), (100, 100))
         self.lock_image = self.load_image('lock.png', scale=(30, 30))
+
+        if sys.platform != "emscripten":
+            self.initialize_audio()
 
     def update_viewport(self):
         """Recalculate the aspect-preserving destination rectangle."""
@@ -361,6 +381,44 @@ class Game:
         font = pygame.font.Font(path, size)
         return font
 
+    def initialize_audio(self):
+        """Open and populate the mixer only after a trusted browser click."""
+        if self.audio_ready:
+            return True
+
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(
+                    frequency=44100,
+                    size=-16,
+                    channels=2,
+                    buffer=2048
+                )
+
+            pygame.mixer.set_num_channels(20)
+            self.hover_sound_channel = pygame.mixer.Channel(10)
+            self.flip_sound = self.load_sound('flip.ogg')
+            self.move_sound = self.load_sound('move.ogg')
+            self.magic_sound = self.load_sound('magic.ogg')
+            self.character_sounds = {
+                character: [
+                    (name, self.load_sound(name))
+                    for name in sound_names
+                ]
+                for character, sound_names in self.character_sound_names.items()
+            }
+
+            for card in self.environment_cards:
+                sound_name = card.name.replace('.png', '.ogg')
+                card.hover_sound = self.load_sound(sound_name)
+
+            self.load_music('Neon_Realms.ogg')
+            self.audio_ready = True
+            return True
+        except pygame.error as error:
+            print(f"Audio unavailable: {error}")
+            return False
+
     def load_sound(self, name):
         # Browsers cannot reliably decode the original WAV/MP3 assets. Keep a
         # single OGG copy for desktop and web instead of packaging both formats.
@@ -405,48 +463,17 @@ class Game:
         for token in TOKEN_TYPES:
             image_name = f"{token}.png"
             self.TOKEN_IMAGES[token] = self.load_image(image_name, scale=(30, 30))
-        self.character_sounds = {
-            'Duskwrit': [
-                ('Duskwrit_1.ogg', self.load_sound('Duskwrit_1.ogg')),
-                ('Duskwrit_2.ogg', self.load_sound('Duskwrit_2.ogg')),
-                ('Duskwrit_3.ogg', self.load_sound('Duskwrit_3.ogg'))
-            ],
-            'Thistlepage': [
-                ('Thistlepage_1.ogg', self.load_sound('Thistlepage_1.ogg')),
-                ('Thistlepage_2.ogg', self.load_sound('Thistlepage_2.ogg')),
-                ('Thistlepage_3.ogg', self.load_sound('Thistlepage_3.ogg'))
-            ],
-            'Referella': [
-                ('Referella_1.ogg', self.load_sound('Referella_1.ogg')),
-                ('Referella_2.ogg', self.load_sound('Referella_2.ogg')),
-                ('Referella_3.ogg', self.load_sound('Referella_3.ogg'))
-            ],
-            'Pendragraph': [
-                ('Pendragraph_1.ogg', self.load_sound('Pendragraph_1.ogg')),
-                ('Pendragraph_2.ogg', self.load_sound('Pendragraph_2.ogg')),
-                ('Pendragraph_3.ogg', self.load_sound('Pendragraph_3.ogg'))
-            ],
-            'Cite-a-lot': [
-                ('citealot_1.ogg', self.load_sound('citealot_1.ogg')),
-                ('citealot_2.ogg', self.load_sound('citealot_2.ogg')),
-                ('citealot_3.ogg', self.load_sound('citealot_3.ogg'))
-            ],
-            'Echo Quill': [
-                ('echoquill_1.ogg', self.load_sound('echoquill_1.ogg')),
-                ('echoquill_2.ogg', self.load_sound('echoquill_2.ogg')),
-                ('echoquill_3.ogg', self.load_sound('echoquill_3.ogg'))
-            ],
-            'Cinder Scroll': [
-                ('cinderscroll_1.ogg', self.load_sound('cinderscroll_1.ogg')),
-                ('cinderscroll_2.ogg', self.load_sound('cinderscroll_2.ogg')),
-                ('cinderscroll_3.ogg', self.load_sound('cinderscroll_3.ogg'))
-            ],
-            'Tomebough': [
-                ('tomebough_1.ogg', self.load_sound('tomebough_1.ogg')),
-                ('tomebough_2.ogg', self.load_sound('tomebough_2.ogg')),
-                ('tomebough_3.ogg', self.load_sound('tomebough_3.ogg'))
-            ]
+        self.character_sound_names = {
+            'Duskwrit': ['Duskwrit_1.ogg', 'Duskwrit_2.ogg', 'Duskwrit_3.ogg'],
+            'Thistlepage': ['Thistlepage_1.ogg', 'Thistlepage_2.ogg', 'Thistlepage_3.ogg'],
+            'Referella': ['Referella_1.ogg', 'Referella_2.ogg', 'Referella_3.ogg'],
+            'Pendragraph': ['Pendragraph_1.ogg', 'Pendragraph_2.ogg', 'Pendragraph_3.ogg'],
+            'Cite-a-lot': ['citealot_1.ogg', 'citealot_2.ogg', 'citealot_3.ogg'],
+            'Echo Quill': ['echoquill_1.ogg', 'echoquill_2.ogg', 'echoquill_3.ogg'],
+            'Cinder Scroll': ['cinderscroll_1.ogg', 'cinderscroll_2.ogg', 'cinderscroll_3.ogg'],
+            'Tomebough': ['tomebough_1.ogg', 'tomebough_2.ogg', 'tomebough_3.ogg']
         }
+        self.character_sounds = {}
         self.citesaga_button = self.load_image('citesaga_button.png')
         self.menu_button = pygame.transform.scale(self.citesaga_button, (400, 120))
         self.citesaga_glow = self.load_image('citesaga_glow.png')
@@ -517,8 +544,6 @@ class Game:
             token_type = self.environment_card_tokens.get(name, None)
             display_name = self.environment_card_display_names.get(name, name.replace('_', ' ').replace('.png', '').title())
             description = self.environment_card_effect_descriptions.get(name, "No effect defined.")
-            sound_name = name.replace('.png', '.ogg')
-            hover_sound = self.load_sound(sound_name)
             card = EnvironmentCard(
                 name,
                 name,
@@ -526,7 +551,7 @@ class Game:
                 display_name,
                 description,
                 scale=(300, 500),
-                hover_sound=hover_sound
+                hover_sound=None
             )
             environment_cards.append(card)
         return environment_cards
@@ -703,6 +728,7 @@ class Game:
 
         if mouse_clicked:
             if start_hover:
+                self.initialize_audio()
                 self.assign_citation_cards()
             elif exit_hover:
                 pygame.quit()
