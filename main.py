@@ -18,6 +18,7 @@ WINDOW_HEIGHT = 1080
 SCREEN_WIDTH = DESIGN_WIDTH
 SCREEN_HEIGHT = DESIGN_HEIGHT
 FPS = 60
+WEB_FPS = 30
 
 GOLD = (231, 231, 231)
 BLACK = (0, 0, 0)
@@ -65,6 +66,7 @@ class Player:
     def __init__(self, name, image_path):
         self.name = name
         self.image = self.load_image(image_path)
+        self.board_image = pygame.transform.scale(self.image, (225, 375))
         self.rect = self.image.get_rect()
         self.current_environment_card = None
         self.citation_cards = []
@@ -93,6 +95,8 @@ class CitationCard:
         self.name = name
         self.front_image = self.load_image(image_path)
         self.back_image = self.load_image('citation_card_back.png')
+        self.display_front_image = pygame.transform.scale(self.front_image, (180, 270))
+        self.display_back_image = pygame.transform.scale(self.back_image, (180, 270))
         self.flipped = False
         self.cost = cost
         self.reward = reward
@@ -329,7 +333,9 @@ class Game:
         if self.viewport_rect.size == self.screen.get_size():
             scaled_frame = self.screen
         else:
-            scaled_frame = pygame.transform.smoothscale(
+            # Avoid the much more expensive smooth scaler for the full
+            # 2560x1440 software frame, especially in WebAssembly.
+            scaled_frame = pygame.transform.scale(
                 self.screen, self.viewport_rect.size
             )
 
@@ -385,9 +391,14 @@ class Game:
         self.column_header_font = self.load_font('Pirata_One.ttf', 40)
         self.background_main = self.load_image('Citesaga.png', scale=(SCREEN_WIDTH, SCREEN_HEIGHT))
         self.background_game = self.load_image('background.png', scale=(SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.menu_logo = self.load_image('citesage_logo.png', scale=(600, 200))
         self.fade_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         self.fade_overlay.set_alpha(150)
         self.fade_overlay.fill(BLACK)
+        # Composite this once. Alpha-blending a full 2560x1440 overlay every
+        # frame is one of the most expensive operations in the web build.
+        self.background_game_dimmed = self.background_game.copy()
+        self.background_game_dimmed.blit(self.fade_overlay, (0, 0))
         self.citation_card_back = self.load_image('citation_card_back.png')
         self.crystal_image = self.load_image('crystal.png', scale=(30, 30))
         self.TOKEN_IMAGES = {}
@@ -437,7 +448,10 @@ class Game:
             ]
         }
         self.citesaga_button = self.load_image('citesaga_button.png')
+        self.menu_button = pygame.transform.scale(self.citesaga_button, (400, 120))
         self.citesaga_glow = self.load_image('citesaga_glow.png')
+        self.citation_glow = pygame.transform.scale(self.citesaga_glow, (180, 270))
+        self.environment_glow = pygame.transform.scale(self.citesaga_glow, (300, 500))
         self.citation_token_counter = self.load_image('citation_token_counter.png', scale=(CITATION_TOKENS_COLUMN_WIDTH, SCREEN_HEIGHT))
         self.citation_card_counter = self.load_image('citation_card_counter.png', scale=(CITATION_CARDS_COLUMN_WIDTH, SCREEN_HEIGHT))
         self.phase_image = self.load_image('phase.png', scale=(400, 150))
@@ -653,7 +667,8 @@ class Game:
             elif self.game_state == COMPLETE_REFERENCE:
                 self.complete_reference()
             self.present_frame()
-            self.clock.tick(FPS)
+            target_fps = WEB_FPS if sys.platform == "emscripten" else FPS
+            self.clock.tick(target_fps)
             await asyncio.sleep(0)
 
     def main_menu(self):
@@ -666,12 +681,8 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_clicked = True
         self.screen.blit(self.background_main, (0, 0))
-        try:
-            logo_image = self.load_image('citesage_logo.png', scale=(600, 200))
-            logo_rect = logo_image.get_rect(center=(SCREEN_WIDTH // 2, 200))
-            self.screen.blit(logo_image, logo_rect.topleft)
-        except:
-            self.draw_text("Citesaga", self.title_font, TEXT_COLOR, SCREEN_WIDTH // 2, 200)
+        logo_rect = self.menu_logo.get_rect(center=(SCREEN_WIDTH // 2, 200))
+        self.screen.blit(self.menu_logo, logo_rect.topleft)
 
         start_button_rect = pygame.Rect(
             (SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2 - 60 + 100),
@@ -684,12 +695,10 @@ class Game:
         start_hover = start_button_rect.collidepoint(mouse_pos)
         exit_hover = exit_button_rect.collidepoint(mouse_pos)
 
-        start_button_image = pygame.transform.scale(self.citesaga_button, (400, 120))
-        self.screen.blit(start_button_image, start_button_rect.topleft)
+        self.screen.blit(self.menu_button, start_button_rect.topleft)
         self.draw_text("Start", self.button_font, TEXT_COLOR, start_button_rect.centerx, start_button_rect.centery)
 
-        exit_button_image = pygame.transform.scale(self.citesaga_button, (400, 120))
-        self.screen.blit(exit_button_image, exit_button_rect.topleft)
+        self.screen.blit(self.menu_button, exit_button_rect.topleft)
         self.draw_text("Exit", self.button_font, TEXT_COLOR, exit_button_rect.centerx, exit_button_rect.centery)
 
         if mouse_clicked:
@@ -779,14 +788,11 @@ class Game:
                 self.turn_image_display_start = current_time
             elapsed_since_start = current_time - self.turn_image_display_start
             if elapsed_since_start < 2000:
-                self.screen.blit(self.background_game, (0, 0))
-                self.screen.blit(self.fade_overlay, (0, 0))
+                self.screen.blit(self.background_game_dimmed, (0, 0))
                 self.draw_citation_tokens()
                 self.draw_citation_cards_column()
                 for card in self.environment_cards:
-                    card_image = card.image.copy()
-                    card_image.set_alpha(255)
-                    self.draw_card_with_shadow(card_image, card.rect)
+                    self.draw_card_with_shadow(card.image, card.rect)
                     self.draw_card_token_indicator(card)
                 for card in self.environment_cards:
                     if card.occupied_by is not None:
@@ -821,14 +827,11 @@ class Game:
             self.current_flip_card_index += 1
             self.flip_in_progress = False
             return
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -847,16 +850,16 @@ class Game:
             card_x = column_x + (CITATION_CARDS_COLUMN_WIDTH - card_width) // 2
             card_y = start_y + i * (card_height + 40) + offset
             if citation_card.flipped:
-                card_image = pygame.transform.scale(citation_card.front_image, (card_width, card_height))
+                card_image = citation_card.display_front_image
                 self.screen.blit(card_image, (card_x, card_y))
             elif i == self.current_flip_card_index and self.flip_in_progress:
-                back_image = pygame.transform.scale(citation_card.back_image, (card_width, card_height))
-                front_image = pygame.transform.scale(citation_card.front_image, (card_width, card_height))
+                back_image = citation_card.display_back_image
+                front_image = citation_card.display_front_image.copy()
                 front_image.set_alpha(current_alpha)
                 self.screen.blit(back_image, (card_x, card_y))
                 self.screen.blit(front_image, (card_x, card_y))
             else:
-                back_image = pygame.transform.scale(citation_card.back_image, (card_width, card_height))
+                back_image = citation_card.display_back_image
                 self.screen.blit(back_image, (card_x, card_y))
         for i, citation_card in enumerate(player.citation_cards):
             card_width = 180
@@ -869,8 +872,7 @@ class Game:
             card_y = start_y + i * (card_height + 40) + offset
             card_rect = pygame.Rect(card_x, card_y, card_width, card_height)
             if card_rect.collidepoint(self.get_mouse_pos()) and not self.zoomed_card:
-                glow_image = pygame.transform.scale(self.citesaga_glow, (card_width, card_height))
-                self.screen.blit(glow_image, (card_x, card_y))
+                self.screen.blit(self.citation_glow, (card_x, card_y))
         if right_clicked:
             if self.zoomed_card:
                 self.zoomed_card = None
@@ -929,14 +931,11 @@ class Game:
                     self.show_popup_message(f"Cheat Activated! {player.name} gains one of every token, crystal, corruption, and key.", choice=False)
                     player.cheat_input_buffer = ""
 
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -1171,15 +1170,15 @@ class Game:
             citation_card = player.citation_cards[i]
             card_x = column_x + (CITATION_CARDS_COLUMN_WIDTH - card_width) // 2
             card_y = start_y + i * (card_height + 40) + (self.citation_card_y_offsets[i] if i < len(self.citation_card_y_offsets) else 0)
-            scaled_card_image = pygame.transform.scale(
-                citation_card.back_image if not citation_card.flipped else citation_card.front_image,
-                (card_width, card_height)
+            scaled_card_image = (
+                citation_card.display_back_image
+                if not citation_card.flipped
+                else citation_card.display_front_image
             )
             self.draw_card_with_shadow(scaled_card_image, pygame.Rect(card_x, card_y, card_width, card_height))
             card_rect = pygame.Rect(card_x, card_y, card_width, card_height)
             if card_rect.collidepoint(self.get_mouse_pos()) and not self.zoomed_card:
-                glow_image = pygame.transform.scale(self.citesaga_glow, (card_width, card_height))
-                self.screen.blit(glow_image, (card_x, card_y))
+                self.screen.blit(self.citation_glow, (card_x, card_y))
             if citation_card.gatekept:
                 lock1_x = card_x + 10
                 lock1_y = card_y + 10
@@ -1196,12 +1195,13 @@ class Game:
             self.screen.blit(zoom_image, zoom_rect.topleft)
 
     def draw_card_with_shadow(self, card_image, card_rect):
-        shadow_offset = (10, 10)
-        shadow_color = (0, 0, 0, 200)
-        shadow_surface = pygame.Surface((card_image.get_width() + 10, card_image.get_height() + 10), pygame.SRCALPHA)
-        shadow_surface.fill((0, 0, 0, 0))
-        pygame.draw.rect(shadow_surface, shadow_color, (5, 5, card_image.get_width(), card_image.get_height()))
-        self.screen.blit(shadow_surface, (card_rect.x - 5 + shadow_offset[0], card_rect.y - 5 + shadow_offset[1]))
+        # Draw directly instead of allocating a large alpha surface per card
+        # on every frame.
+        pygame.draw.rect(
+            self.screen,
+            BLACK,
+            (card_rect.x + 10, card_rect.y + 10, card_rect.width, card_rect.height)
+        )
         self.screen.blit(card_image, (card_rect.x, card_rect.y))
 
     def player_turn_conclusion(self):
@@ -1215,14 +1215,11 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mouse_clicked = True
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -1259,14 +1256,11 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mouse_clicked = True
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -1387,8 +1381,7 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mouse_clicked = True
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         message = self.popup_message
         popup_width = 800
         popup_height = 300
@@ -1443,14 +1436,11 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mouse_clicked = True
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -1769,18 +1759,13 @@ class Game:
             self.screen.blit(phase_image, phase_image_rect.topleft)
         phase_rect = self.phase_image.get_rect(midtop=(SCREEN_WIDTH // 2, 0))
         self.screen.blit(self.phase_image, phase_rect.topleft)
-        font = self.load_font('Pirata_One.ttf', 40)
-        text_surface = font.render(phase_text, True, TEXT_COLOR)
+        text_surface = self.button_font.render(phase_text, True, TEXT_COLOR)
         text_rect = text_surface.get_rect(midtop=(SCREEN_WIDTH // 2, phase_rect.bottom + 10))
         self.screen.blit(text_surface, text_rect)
 
     def draw_player_on_card(self, player, card):
-        card_width, card_height = card.rect.size
-        scaled_width = int(card_width * 0.75)
-        scaled_height = int(card_height * 0.75)
-        scaled_player_image = pygame.transform.scale(player.image, (scaled_width, scaled_height))
-        player_rect = scaled_player_image.get_rect(center=card.rect.center)
-        self.screen.blit(scaled_player_image, player_rect.topleft)
+        player_rect = player.board_image.get_rect(center=card.rect.center)
+        self.screen.blit(player.board_image, player_rect.topleft)
 
     def end_game(self):
         pass
@@ -1927,14 +1912,11 @@ class Game:
                     mouse_clicked = True
                 elif event.button == 3:
                     right_clicked = True
-        self.screen.blit(self.background_game, (0, 0))
-        self.screen.blit(self.fade_overlay, (0, 0))
+        self.screen.blit(self.background_game_dimmed, (0, 0))
         self.draw_citation_tokens()
         self.draw_citation_cards_column()
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
         for card in self.environment_cards:
             if card.occupied_by is not None:
@@ -2028,7 +2010,6 @@ class Game:
             PADDING = 10
             if card.token in self.TOKEN_IMAGES:
                 token_image = self.TOKEN_IMAGES[card.token]
-                token_image = pygame.transform.scale(token_image, (INDICATOR_SIZE, INDICATOR_SIZE))
                 self.screen.blit(token_image, (card.rect.left + PADDING, card.rect.top + PADDING))
             else:
                 pygame.draw.rect(self.screen, TOKEN_COLORS[card.token], (card.rect.left + PADDING, card.rect.top + PADDING, INDICATOR_SIZE, INDICATOR_SIZE))
@@ -2072,20 +2053,16 @@ class Game:
 
     def draw_environment_card_hover_effects(self, card, mouse_pos):
         if card.rect.collidepoint(mouse_pos):
-            glow_image = pygame.transform.scale(self.citesaga_glow, (card.rect.width, card.rect.height))
-            self.screen.blit(glow_image, card.rect.topleft)
+            self.screen.blit(self.environment_glow, card.rect.topleft)
 
     def draw_environment_cards(self):
         for card in self.environment_cards:
-            card_image = card.image.copy()
-            card_image.set_alpha(255)
-            self.draw_card_with_shadow(card_image, card.rect)
+            self.draw_card_with_shadow(card.image, card.rect)
             self.draw_card_token_indicator(card)
             if card.occupied_by is not None:
                 self.draw_player_on_card(card.occupied_by, card)
             if card.rect.collidepoint(self.get_mouse_pos()):
-                glow_image = pygame.transform.scale(self.citesaga_glow, (card.rect.width, card.rect.height))
-                self.screen.blit(glow_image, card.rect.topleft)
+                self.screen.blit(self.environment_glow, card.rect.topleft)
 
 async def main():
     if sys.platform == "emscripten":
