@@ -25,15 +25,27 @@ jobs:
         run: pip install pygbag
 
       - name: Build WebAssembly Version
-        run: python -m pygbag Citesaga1-master
+        run: python -m pygbag --build Citesaga1-master
 
-      - name: Post-build HTML Adjustments
+      - name: Upload archive to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: game-assets-latest
+          name: Game Assets (auto-updated)
+          files: |
+            Citesaga1-master/build/web/citesaga1-master.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch index.html to load archive from GitHub Release
         run: |
-          sed -i 's/background-color:powderblue;/background-color:black;/g' build/web/index.html
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/game-assets-latest/citesaga1-master.tar.gz"
+          sed -i "s|citesaga1-master.tar.gz|${RELEASE_URL}|g" Citesaga1-master/build/web/index.html
+          sed -i 's/background-color:powderblue;/background-color:black;/g' Citesaga1-master/build/web/index.html
 
-
-      - name: Deploy to GitHub Pages
+      - name: Deploy static files to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build/web
+          publish_dir: Citesaga1-master/build/web
+          exclude_assets: '*.tar.gz,*.apk'
