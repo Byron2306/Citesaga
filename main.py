@@ -163,12 +163,25 @@ class Game:
             pygame.init()
 
         self.audio_ready = False
+        self.web_fps = WEB_FPS
+        self.audio_buffer = 2048
 
         global WINDOW_WIDTH, WINDOW_HEIGHT
         if sys.platform == "emscripten":
             import platform
             WINDOW_WIDTH = platform.window.innerWidth
             WINDOW_HEIGHT = platform.window.innerHeight
+            user_agent = str(platform.window.navigator.userAgent)
+            is_chromium = (
+                "Chrome" in user_agent
+                or "Chromium" in user_agent
+                or "Edg/" in user_agent
+            )
+            if is_chromium:
+                # Chromium's legacy ScriptProcessorNode needs more scheduling
+                # headroom than Firefox when SDL and Python share one thread.
+                self.web_fps = 24
+                self.audio_buffer = 4096
 
         # Physical display surface: starts at exactly 1920x1080, but remains
         # resizable. The game itself renders to the larger logical canvas below.
@@ -392,7 +405,7 @@ class Game:
                     frequency=44100,
                     size=-16,
                     channels=2,
-                    buffer=2048
+                    buffer=self.audio_buffer
                 )
 
             pygame.mixer.set_num_channels(20)
@@ -692,7 +705,7 @@ class Game:
             elif self.game_state == COMPLETE_REFERENCE:
                 self.complete_reference()
             self.present_frame()
-            target_fps = WEB_FPS if sys.platform == "emscripten" else FPS
+            target_fps = self.web_fps if sys.platform == "emscripten" else FPS
             self.clock.tick(target_fps)
             await asyncio.sleep(0)
 
