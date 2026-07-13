@@ -19,6 +19,7 @@ SCREEN_WIDTH = DESIGN_WIDTH
 SCREEN_HEIGHT = DESIGN_HEIGHT
 FPS = 60
 WEB_FPS = 30
+CHROMIUM_WEB_FPS = 12
 
 GOLD = (231, 231, 231)
 BLACK = (0, 0, 0)
@@ -163,6 +164,7 @@ class Game:
             pygame.init()
 
         self.audio_ready = False
+        self.audio_enabled = True
         self.web_fps = WEB_FPS
         self.audio_buffer = 2048
 
@@ -178,10 +180,13 @@ class Game:
                 or "Edg/" in user_agent
             )
             if is_chromium:
-                # Chromium's legacy ScriptProcessorNode needs more scheduling
-                # headroom than Firefox when SDL and Python share one thread.
-                self.web_fps = 24
-                self.audio_buffer = 4096
+                # pygame-web 0.9.3 routes SDL audio through the deprecated
+                # ScriptProcessorNode API. In Chromium it runs on the same
+                # thread as this large software-rendered frame and can make
+                # the entire tab unresponsive. Keep the game playable and
+                # leave audio enabled on browsers with a stable SDL backend.
+                self.audio_enabled = False
+                self.web_fps = CHROMIUM_WEB_FPS
 
         # Physical display surface: starts at exactly 1920x1080, but remains
         # resizable. The game itself renders to the larger logical canvas below.
@@ -399,6 +404,13 @@ class Game:
         if self.audio_ready:
             return True
 
+        if not self.audio_enabled:
+            # Mark initialization as handled so later interactions do not keep
+            # retrying Chromium's problematic SDL audio device.
+            self.audio_ready = True
+            print("Audio disabled: Chromium SDL audio is not stable in pygame-web 0.9.3")
+            return False
+
         try:
             if not pygame.mixer.get_init():
                 pygame.mixer.init(
@@ -433,6 +445,9 @@ class Game:
             return False
 
     def load_sound(self, name):
+        if not self.audio_enabled:
+            return SilentSound()
+
         # Browsers cannot reliably decode the original WAV/MP3 assets. Keep a
         # single OGG copy for desktop and web instead of packaging both formats.
         sound_name = f"{os.path.splitext(name)[0]}.ogg"
@@ -627,7 +642,23 @@ class Game:
         for player in self.players:
             for card in player.citation_cards:
                 card.flipped = False
-        self.game_state = FADE_IN_ENVIRONMENT_CARDS
+        if sys.platform == "emscripten":
+            # Repeated alpha copies of eight 300x500 surfaces can stall
+            # Chromium's WebAssembly canvas midway through a cleared frame.
+            # Start from the completed transition on web; gameplay is the same.
+            self.environment_alphas = [255 for _ in self.environment_cards]
+            self.faded_in_cards = list(self.environment_cards)
+            self.game_state = PLAYER_TURN_FLIP_CITATION_CARDS
+            self.citation_flip_index = 0
+            self.flipping_citation = False
+            self.flip_alpha = 0
+            self.flip_start_time = pygame.time.get_ticks()
+            self.current_flip_card_index = 0
+            self.flip_in_progress = False
+            self.show_turn_image = True
+            self.turn_image_display_start = pygame.time.get_ticks()
+        else:
+            self.game_state = FADE_IN_ENVIRONMENT_CARDS
         if self.current_hovered_card:
             self.hover_sound_channel.stop()
             self.current_hovered_card = None
@@ -705,9 +736,14 @@ class Game:
             elif self.game_state == COMPLETE_REFERENCE:
                 self.complete_reference()
             self.present_frame()
-            target_fps = self.web_fps if sys.platform == "emscripten" else FPS
-            self.clock.tick(target_fps)
-            await asyncio.sleep(0)
+            if sys.platform == "emscripten":
+                # Clock.tick() does not reliably throttle an Emscripten build.
+                # A real async delay yields Chrome's main thread to input,
+                # compositing, and browser housekeeping between large frames.
+                await asyncio.sleep(1 / self.web_fps)
+            else:
+                self.clock.tick(FPS)
+                await asyncio.sleep(0)
 
     def main_menu(self):
         mouse_pos = self.get_mouse_pos()
